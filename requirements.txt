@@ -1,0 +1,4 @@
+qdrant-client
+lightweight-embeddings
+pypdf
+requests
