@@ -1,77 +1,103 @@
-sts
+import os
+import requests
+from lightweight_embeddings import TextEmbedder
+from pdf_loader import download_pdf, extract_text_from_pdf
+from text_cleaner import clean_text
+from qdrant_utils import create_collection_if_not_exists, insert_document, semantic_search
+from config import GITHUB_PDF_FOLDER
+
 # ------------------------------
 # 1) Initialisation de l'embedder
 # ------------------------------
 embedder = TextEmbedder("all-MiniLM-L6-v2")
 
-
 def get_embedding(text: str):
-return embedder.embed(text).tolist()
-
+    return embedder.embed(text).tolist()
 
 # ------------------------------
 # 2) Récupération des PDFs depuis GitHub
 # ------------------------------
-def list_github_pdfs(folder_url: str):
-# GitHub ne fournit pas d'API pour lister un dossier brut → nécessite liste manuelle OU API GitHub
-# Pour un vrai cas : utiliser l'API GitHub
-raise NotImplementedError("Fourni-moi la liste exacte des PDF ou le lien API GitHub.")
+import requests
 
+def list_github_pdfs(folder_url: str= GITHUB_PDF_FOLDER, github_token: str | None = None):
+    """
+    Liste automatiquement les fichiers PDF d'un dossier GitHub via l'API GitHub.
+
+    folder_url doit être de la forme :
+        https://github.com/<user>/<repo>/tree/<branch>/<path>
+
+    Exemple :
+        https://github.com/monuser/monrepo/tree/main/docs/pdfs
+    """
+
+    # Conversion URL HTML GitHub -> API GitHub
+    # URL HTML : https://github.com/user/repo/tree/branch/path
+    # API :      https://api.github.com/repos/user/repo/contents/path?ref=branch
+
+    parts = folder_url.replace("https://github.com/", "").split("/")
+    user = parts[0]
+    repo = parts[1]
+    branch = parts[3]
+    path = "/".join(parts[4:])
+
+    api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{path}?ref={branch}"
+
+    headers = {}
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
+    response = requests.get(api_url, headers=headers)
+    response.raise_for_status()
+    items = response.json()
+
+    pdf_files = [item["download_url"] for item in items if item["name"].lower().endswith(".pdf")]
+    return pdf_files("Fourni-moi la liste exacte des PDF ou le lien API GitHub.")
 
 # ------------------------------
 # 3) Ingestion d'un ensemble de PDFs
 # ------------------------------
 def ingest_pdfs(pdf_urls: list[str]):
-texts = []
+    texts = []
 
+    for i, url in enumerate(pdf_urls):
+        print(f"Téléchargement : {url}")
+        pdf_bytes = download_pdf(url)
+        text = extract_text_from_pdf(pdf_bytes)
+        text = clean_text(text)
+        texts.append((i, text))
 
-for i, url in enumerate(pdf_urls):
-print(f"Téléchargement : {url}")
-pdf_bytes = download_pdf(url)
-text = extract_text_from_pdf(pdf_bytes)
-text = clean_text(text)
-texts.append((i, text))
+    # Création collection Qdrant
+    vector_size = len(get_embedding("test"))
+    create_collection_if_not_exists(vector_size)
 
+    # Insertion des documents
+    for doc_id, text in texts:
+        vector = get_embedding(text)
+        insert_document(doc_id, vector, text)
+        print(f"Document {doc_id} inséré.")
 
-# Création collection Qdrant
-vector_size = len(get_embedding("test"))
-create_collection_if_not_exists(vector_size)
-
-
-# Insertion des documents
-for doc_id, text in texts:
-vector = get_embedding(text)
-insert_document(doc_id, vector, text)
-print(f"Document {doc_id} inséré.")
-
-
-print("Ingestion terminée.")
-
+    print("Ingestion terminée.")
 
 # ------------------------------
 # 4) Exemple de recherche
 # ------------------------------
 def run_search(query: str):
-q_vec = get_embedding(query)
-results = semantic_search(q_vec, limit=3)
-for r in results:
-print("→ Score:", r.score)
-print("Texte extrait:", r.payload["text"][:300], "...\n")
-
-
+    q_vec = get_embedding(query)
+    results = semantic_search(q_vec, limit=3)
+    for r in results:
+        print("→ Score:", r.score)
+        print("Texte extrait:", r.payload["text"][:300], "...\n")
 
 
 if __name__ == "__main__":
-# Exemple : liste de PDFs hébergés sur GitHub
-pdf_urls = [
-GITHUB_PDF_FOLDER + "fichier1.pdf",
-GITHUB_PDF_FOLDER + "fichier2.pdf",
-GITHUB_PDF_FOLDER + "fichier3.pdf",
-]
+    # Exemple : liste de PDFs hébergés sur GitHub
+    pdf_urls = [
+        GITHUB_PDF_FOLDER + "fichier1.pdf",
+        GITHUB_PDF_FOLDER + "fichier2.pdf",
+        GITHUB_PDF_FOLDER + "fichier3.pdf",
+    ]
 
+    ingest_pdfs(pdf_urls)
 
-ingest_pdfs(pdf_urls)
-
-
-print("\nRecherche d'exemple :")
-run_search("éducation canine")
+    print("\nRecherche d'exemple :")
+    run_search("éducation canine")
